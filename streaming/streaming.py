@@ -55,27 +55,26 @@ StructField("description", StringType(), True),
 StructField("speed", StringType(), True),
 StructField("satellites", StringType(), True),
 StructField("precission", StringType(), True),
+StructField("provider", StringType(), True),
 StructField("activity", StringType(), True),
 StructField("postal_code", StringType(), True),
 
 ])
 
-
 stream_name = STREAM_ARN.split("/")[-1]
-aws_region = STREAM_ARN.split(":")[3]
+aws_region  = STREAM_ARN.split(":")[3]
 
 #Connecting to Kinesis via "spark.readStream"
 
 raw_df = (
-spark.readStream
-.format("kinesis")
-.option("stream_name", stream_name)
-.option("endpointURL", f"https://kinesis.{aws_region}.amazonaws.com")
-.option("region", aws_region)
-.option("startingposition", "TRIM_HORIZON")
-.option("kinesis.client.describeShardInterval", "30s")
-.load()
-
+    spark.readStream
+        .format("kinesis")
+        .option("streamName", stream_name)
+        .option("endpointUrl", f"https://kinesis.{aws_region}.amazonaws.com")
+        .option("region", aws_region)
+        .option("startingPosition", "TRIM_HORIZON")
+        .option("kinesis.client.describeShardInterval", "30s")
+        .load()
 )
 
 logger.info("Successfully connected to AWS Kinesis Stream via spark.readStream"
@@ -95,7 +94,7 @@ df_with_timestamp = (
     .withColumn("event_timestamp", to_timestamp(
         concat(current_date().cast("string"), lit(" "), col("hour")),"yyyy-MM-dd HH:mm:ss",
 ),)
-    .withColumn("partiton_hour", date_format(col("event_timestamp"), "HH"))
+    .withColumn("partition_hour", date_format(col("event_timestamp"), "HH"))
     .withColumn("signal",     col("signal").cast("int"))
     .withColumn("lat",        col("lat").cast("double"))
     .withColumn("long",       col("long").cast("double"))
