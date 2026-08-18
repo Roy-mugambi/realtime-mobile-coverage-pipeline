@@ -177,7 +177,7 @@ logger.info("Aggregation DataFrames defined. Starting write streams.")
 
 # writing stream Output to S3.
 # We will use DataFrame.writeStream to ensure a continous sink(that does to exit after execution)
-# Spark manages thus sink for the lifetime of the job
+# Spark manages this sink for the lifetime of the job
 
 # Since we will be using partition projection in in Athena Queries,  we ought to ensure 
 # that our S3 directory structure match the partition columns and the storage.location.template configured in Athena.

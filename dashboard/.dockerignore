@@ -1,0 +1,46 @@
+# .dockerignore — files NOT to copy into the Docker build context
+
+# WHY THIS MATTERS:
+#   Without .dockerignore, `docker build` sends the entire dashboard/ folder
+#   to the Docker daemon as the "build context". That includes the .venv
+#   (often 500+ MB of dependencies) and __pycache__ files.
+
+
+# ── Python environments and cache ───────────────────────────────────────────
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# ── Local secrets and AWS credentials ───────────────────────────────────────
+# Never bake credentials into an image. ECS uses IAM task roles instead.
+.env
+.env.*
+.aws/
+credentials
+*.pem
+
+# ── OS / editor junk ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# ── Git ─────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+
+# ── Container artefacts ─────────────────────────────────────────────────────
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# ── Docs ────────────────────────────────────────────────────────────────────
+*.md
+README*
