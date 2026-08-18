@@ -1,27 +1,3 @@
-"""
-=============================================================================
-MOBILE NETWORK DASHBOARD — Streamlit
-=============================================================================
-
-WHAT THIS APP DOES:
-  A live operational dashboard for the mobile network streaming pipeline.
-  Reads from three Athena tables, surfaces KPIs and charts, refreshes only
-  when the user clicks Refresh.
-
-COMPATIBILITY NOTE (Streamlit 1.57):
-  This version avoids API patterns that changed since 1.32 and renders each
-  section inside try/except so any single failure shows an inline error
-  instead of blanking the whole page. Charts are built with explicit
-  pandas reshaping (pivot) rather than the color= shorthand, which behaves
-  inconsistently across Streamlit versions.
-
-HOW TO RUN LOCALLY:
-  1. AWS credentials configured (aws configure)
-  2. pip install -r requirements.txt
-  3. streamlit run app.py
-=============================================================================
-"""
-
 import streamlit as st
 import pandas as pd
 import traceback
@@ -66,29 +42,43 @@ LIMIT 200
 @st.cache_data(ttl=3600, show_spinner="Loading signal data...")
 def load_signal() -> pd.DataFrame:
     df = ac.run_query(SQL_SIGNAL)
-    return ac.coerce_types(
+    df = ac.coerce_types(
         df,
         numeric_cols=["average_signal"],
         timestamp_cols=["window_start", "window_end"],
     )
+    # Strip timezone info so Streamlit/Altair treats timestamps as local wall
+    # clock time rather than shifting them to the browser's UTC offset.
+    for col in ("window_start", "window_end"):
+        if col in df.columns and pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.tz_localize(None)
+    return df
 
 @st.cache_data(ttl=3600, show_spinner="Loading GPS data...")
 def load_gps() -> pd.DataFrame:
     df = ac.run_query(SQL_GPS)
-    return ac.coerce_types(
+    df = ac.coerce_types(
         df,
         numeric_cols=["average_precision", "average_satellites"],
         timestamp_cols=["window_start", "window_end"],
     )
+    for col in ("window_start", "window_end"):
+        if col in df.columns and pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.tz_localize(None)
+    return df
 
 @st.cache_data(ttl=3600, show_spinner="Loading status data...")
 def load_status() -> pd.DataFrame:
     df = ac.run_query(SQL_STATUS)
-    return ac.coerce_types(
+    df = ac.coerce_types(
         df,
         numeric_cols=["status_count"],
         timestamp_cols=["window_start", "window_end"],
     )
+    for col in ("window_start", "window_end"):
+        if col in df.columns and pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.tz_localize(None)
+    return df
 
 # ---------------------------------------------------------------------------
 # HEADER + REFRESH
@@ -100,14 +90,14 @@ with col_title:
 with col_refresh:
     st.write("")
     st.write("")
-    if st.button("🔄 Refresh", use_container_width=True):
+    if st.button("🔄 Refresh", width="stretch"):
         st.cache_data.clear()
         st.rerun()
 
 st.divider()
 
 # ---------------------------------------------------------------------------
-# LOAD DATA (with visible error handling)
+# LOAD DATA
 # ---------------------------------------------------------------------------
 try:
     df_signal = load_signal()
@@ -118,7 +108,11 @@ except Exception as e:
     st.code(traceback.format_exc())
     st.stop()
 
-st.success(f"Loaded {len(df_signal)} signal rows, {len(df_gps)} GPS rows, {len(df_status)} status rows.")
+st.success(
+    f"Loaded {len(df_signal)} signal rows, "
+    f"{len(df_gps)} GPS rows, "
+    f"{len(df_status)} status rows."
+)
 
 # ---------------------------------------------------------------------------
 # KPI ROW
@@ -129,14 +123,18 @@ try:
     if not df_signal.empty:
         best  = df_signal.loc[df_signal["average_signal"].idxmax()]
         worst = df_signal.loc[df_signal["average_signal"].idxmin()]
-        k1.metric("Best operator", str(best["operator"]), f"signal {best['average_signal']:.1f}")
+        k1.metric("Best operator",  str(best["operator"]),  f"signal {best['average_signal']:.1f}")
         k2.metric("Worst operator", str(worst["operator"]), f"signal {worst['average_signal']:.1f}")
     if not df_gps.empty:
         best_gps = df_gps.loc[df_gps["average_precision"].idxmin()]
-        k3.metric("Most accurate GPS", str(best_gps["provider"]), f"{best_gps['average_precision']:.1f}m")
+        k3.metric("Most accurate GPS", str(best_gps["provider"]),
+                  f"{best_gps['average_precision']:.1f}m")
     if not df_signal.empty:
         latest = df_signal["window_start"].max()
-        k4.metric("Latest window", latest.strftime("%H:%M:%S") if pd.notna(latest) else "—")
+        k4.metric(
+            "Latest window",
+            latest.strftime("%H:%M:%S") if pd.notna(latest) else "—",
+        )
 except Exception:
     st.warning("Could not render KPIs.")
     st.code(traceback.format_exc())
@@ -146,15 +144,9 @@ st.divider()
 # ---------------------------------------------------------------------------
 # SIGNAL STRENGTH CHARTS
 # ---------------------------------------------------------------------------
-# WHY PIVOT INSTEAD OF color="operator"?
-# Streamlit's native charts render multiple series by having one COLUMN per
-# series (wide format), which is version-stable. The color= shorthand (long
-# format) changed behaviour across versions and is the likely cause of the
-# blank page. Pivoting to wide format sidesteps it entirely.
 st.subheader("Signal strength by operator")
 try:
     if not df_signal.empty:
-        # Average across postal codes per (window, operator), then pivot wide
         wide = (
             df_signal
             .groupby(["window_start", "operator"], as_index=False)["average_signal"]
@@ -164,11 +156,13 @@ try:
         )
         st.line_chart(wide, height=320)
 
-        # Bar: overall average per operator
         bar = (
-            df_signal.groupby("operator")["average_signal"]
+            df_signal
+            .groupby("operator")["average_signal"]
             .mean()
+            .round(1)
             .sort_values(ascending=True)
+            .rename("avg signal")
         )
         st.bar_chart(bar, height=240)
     else:
@@ -189,7 +183,8 @@ try:
         with c1:
             st.markdown("**Average precision (m) — lower is better**")
             prec = (
-                df_gps.groupby(["window_start", "provider"], as_index=False)["average_precision"]
+                df_gps
+                .groupby(["window_start", "provider"], as_index=False)["average_precision"]
                 .mean()
                 .pivot(index="window_start", columns="provider", values="average_precision")
                 .sort_index()
@@ -198,7 +193,8 @@ try:
         with c2:
             st.markdown("**Average satellites**")
             sats = (
-                df_gps.groupby(["window_start", "provider"], as_index=False)["average_satellites"]
+                df_gps
+                .groupby(["window_start", "provider"], as_index=False)["average_satellites"]
                 .mean()
                 .pivot(index="window_start", columns="provider", values="average_satellites")
                 .sort_index()
@@ -213,11 +209,38 @@ except Exception:
 st.divider()
 
 # ---------------------------------------------------------------------------
+# STATUS BREAKDOWN
+# ---------------------------------------------------------------------------
+st.subheader("Status distribution")
+try:
+    if not df_status.empty:
+        STATUS_LABELS = {
+            "0": "In service",
+            "1": "Out of service",
+            "2": "Emergency only",
+            "3": "Power off",
+        }
+        status_summary = (
+            df_status
+            .assign(status_label=df_status["status"].astype(str).map(STATUS_LABELS)
+                    .fillna(df_status["status"].astype(str)))
+            .groupby("status_label")["status_count"]
+            .sum()
+            .sort_values(ascending=False)
+            .rename("total events")
+        )
+        st.bar_chart(status_summary, height=200)
+    else:
+        st.info("No status data.")
+except Exception:
+    st.warning("Could not render status chart.")
+    st.code(traceback.format_exc())
+
+st.divider()
+
+# ---------------------------------------------------------------------------
 # RAW DATA TABLES
 # ---------------------------------------------------------------------------
-# WHY NO .style.format()?
-# The pandas Styler object behaves differently across Streamlit versions and
-# can fail to render. Plain DataFrames with pre-rounded values are stable.
 st.subheader("Recent windows (raw data)")
 try:
     t1, t2, t3 = st.tabs(["Signal strength", "GPS precision", "Status count"])
@@ -225,15 +248,22 @@ try:
         d = df_signal.head(50).copy()
         if "average_signal" in d.columns:
             d["average_signal"] = d["average_signal"].round(2)
-        st.dataframe(d, use_container_width=True, hide_index=True)
+        st.dataframe(d, width="stretch", hide_index=True)
     with t2:
         d = df_gps.head(50).copy()
         for c in ("average_precision", "average_satellites"):
             if c in d.columns:
                 d[c] = d[c].round(2)
-        st.dataframe(d, use_container_width=True, hide_index=True)
+        st.dataframe(d, width="stretch", hide_index=True)
     with t3:
-        st.dataframe(df_status.head(50), use_container_width=True, hide_index=True)
+        d = df_status.head(50).copy()
+        if "status" in d.columns:
+            STATUS_LABELS = {
+                "0": "In service", "1": "Out of service",
+                "2": "Emergency only", "3": "Power off",
+            }
+            d["status"] = d["status"].astype(str).map(STATUS_LABELS).fillna(d["status"].astype(str))
+        st.dataframe(d, width="stretch", hide_index=True)
 except Exception:
     st.warning("Could not render data tables.")
     st.code(traceback.format_exc())
