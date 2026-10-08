@@ -1,15 +1,12 @@
 
--- STAGE 3 — Athena Tables with Partition Projection 
+-- Athena Tables with Partition Projection 
 
 
---   For the partition projection we use "enum" projection. 
+-- For the partition projection we use "enum" projection. 
 -- With enum, you give Athena the full list of possible values up front, so it can enumerate them itself. 
 -- That means you can query without filtering on postal_code, and
 --   aggregate across all of them — which is what a dashboard needs.
 
--- The trade-off with ENUM is that you need to list every possible value
-
- 
  
 CREATE DATABASE IF NOT EXISTS mobile_network_aggregations;
  
@@ -42,7 +39,7 @@ TBLPROPERTIES (
     'projection.partition_hour.range'  = '0,23',
     'projection.partition_hour.digits' = '2',
     'projection.postal_code.type'      = 'enum',
-    'projection.postal_code.values'    = '15001,22001,28013,29001,41001,44001,46002,47001,48001,5001,6001,8002',
+    'projection.postal_code.values'    = '05001,06001,08002,15001,22001,28013,29001,41001,44001,46002,47001,48001',
     'storage.location.template'        = 's3://roy-projects/mobile-network-lab/aggregations/signal_strength_by_operator/partition_hour=${partition_hour}/postal_code=${postal_code}/'
 );
  
@@ -97,7 +94,7 @@ TBLPROPERTIES (
     'projection.partition_hour.range'  = '0,23',
     'projection.partition_hour.digits' = '2',
     'projection.postal_code.type'      = 'enum',
-    'projection.postal_code.values'    = '15001,22001,28013,29001,41001,44001,46002,47001,48001,5001,6001,8002',
+    'projection.postal_code.values'    = '05001,06001,08002,15001,22001,28013,29001,41001,44001,46002,47001,48001',
     'storage.location.template'        = 's3://roy-projects/mobile-network-lab/aggregations/status_count/partition_hour=${partition_hour}/postal_code=${postal_code}/'
 );
  

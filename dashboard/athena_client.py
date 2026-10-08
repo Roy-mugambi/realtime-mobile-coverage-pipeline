@@ -1,26 +1,9 @@
 """
-=============================================================================
-ATHENA CLIENT — reusable query helper
-=============================================================================
-
-WHY A SEPARATE MODULE?
-  The original lab's app.py inlined Athena query logic alongside Streamlit
-  UI code. That mixes two unrelated concerns: data fetching and presentation.
-
-  Splitting them gives us:
-    - Reusability: any other tool can import this module
-    - Testability: we can unit-test the query lifecycle without Streamlit
-    - Readability: app.py stops being 200 lines of intertwined logic
-
 ATHENA QUERY LIFECYCLE:
   Athena is async. Every query goes through three steps:
     1. SUBMIT  — POST the SQL, get back a QueryExecutionId
     2. POLL    — check status every ~0.5s until SUCCEEDED/FAILED/CANCELLED
     3. FETCH   — download results in pages of up to 1,000 rows
-
-  This module wraps all three into one synchronous-feeling function.
-
-=============================================================================
 """
 
 import time
@@ -32,16 +15,14 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# CONFIG
-# Pulled at import time. In production these would be env vars; for the lab
-# we keep them centralised here so app.py doesn't have to know AWS details.
-# ---------------------------------------------------------------------------
+
+# CONFIG - Pulled at import time. 
+
 REGION              = "us-east-1"
 DATABASE            = "mobile_network_aggregations"
 QUERY_OUTPUT_S3     = "s3://roy-projects/mobile-network-lab/athena-results/"
 
-# Polling settings
+
 POLL_INTERVAL_SEC   = 0.5      # how often to check query status
 QUERY_TIMEOUT_SEC   = 60       # give up if a query takes longer than this
 
@@ -49,14 +30,9 @@ QUERY_TIMEOUT_SEC   = 60       # give up if a query takes longer than this
 PAGE_SIZE           = 1000     # max rows per Athena GetQueryResults call
 MAX_TOTAL_ROWS      = 10_000   # safety cap — dashboard shouldn't pull more
 
-# ---------------------------------------------------------------------------
-# CLIENT (initialised once, reused for all calls)
-# ---------------------------------------------------------------------------
-# WHY MODULE-LEVEL CLIENT?
-# boto3 clients are thread-safe and expensive to construct (they negotiate
-# credentials, load endpoints, etc.). Creating one client per query would
-# add ~100ms of overhead each time. One module-level client is the standard
-# pattern.
+
+# CLIENT - A module-level client that's initialised once, reused for all calls
+
 _athena = boto3.client("athena", region_name=REGION)
 
 
@@ -85,9 +61,9 @@ def run_query(sql: str) -> pd.DataFrame:
     return _fetch_results(query_id)
 
 
-# ---------------------------------------------------------------------------
-# STEP 1 — SUBMIT
-# ---------------------------------------------------------------------------
+
+# STEP 1 — SUBMIT QUERY
+
 
 def _submit(sql: str) -> str:
     """Submit the query and return its execution ID."""
@@ -106,9 +82,7 @@ def _submit(sql: str) -> str:
         raise RuntimeError(f"Failed to submit Athena query: {e}") from e
 
 
-# ---------------------------------------------------------------------------
 # STEP 2 — POLL
-# ---------------------------------------------------------------------------
 
 def _wait_for_completion(query_id: str, sql_for_error: str) -> None:
     """
@@ -146,10 +120,8 @@ def _wait_for_completion(query_id: str, sql_for_error: str) -> None:
 
         time.sleep(POLL_INTERVAL_SEC)
 
-
-# ---------------------------------------------------------------------------
 # STEP 3 — FETCH
-# ---------------------------------------------------------------------------
+
 
 def _fetch_results(query_id: str) -> pd.DataFrame:
     """
@@ -206,17 +178,12 @@ def _fetch_results(query_id: str) -> pd.DataFrame:
     return df
 
 
-# ---------------------------------------------------------------------------
 # TYPE COERCION HELPER
-# ---------------------------------------------------------------------------
-# Athena returns every cell as a string regardless of the column's actual
-# type. We coerce numeric and timestamp columns here so the dashboard can
-# work with them naturally (sorting, formatting, math).
-#
-# WHY NOT JUST USE pd.read_sql_query?
-# That requires a SQLAlchemy connection to Athena, which is an extra
-# dependency (pyathena or similar). Sticking to boto3 keeps the deployment
-# image leaner and avoids one more thing that can go wrong in production.
+"""
+ Athena returns every cell as a string regardless of the column's actual
+ type. We coerce numeric and timestamp columns here so the dashboard can
+ work with them naturally (sorting, formatting, math).
+"""
 
 def coerce_types(df: pd.DataFrame, numeric_cols: list[str] = None,
                  timestamp_cols: list[str] = None) -> pd.DataFrame:

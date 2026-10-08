@@ -9,9 +9,8 @@ st.set_page_config(
     layout="wide",
 )
 
-# ---------------------------------------------------------------------------
 # SQL QUERIES
-# ---------------------------------------------------------------------------
+
 SQL_SIGNAL = """
 SELECT operator, postal_code, average_signal,
        window_start, window_end, partition_hour
@@ -36,9 +35,8 @@ ORDER BY window_start DESC
 LIMIT 200
 """
 
-# ---------------------------------------------------------------------------
 # CACHED LOADERS
-# ---------------------------------------------------------------------------
+
 @st.cache_data(ttl=3600, show_spinner="Loading signal data...")
 def load_signal() -> pd.DataFrame:
     df = ac.run_query(SQL_SIGNAL)
@@ -80,9 +78,9 @@ def load_status() -> pd.DataFrame:
             df[col] = df[col].dt.tz_localize(None)
     return df
 
-# ---------------------------------------------------------------------------
-# HEADER + REFRESH
-# ---------------------------------------------------------------------------
+
+# DASHBOARD-HEADER + REFRESH
+
 col_title, col_refresh = st.columns([4, 1])
 with col_title:
     st.title("📡 Mobile Network Dashboard")
@@ -96,9 +94,9 @@ with col_refresh:
 
 st.divider()
 
-# ---------------------------------------------------------------------------
+
 # LOAD DATA
-# ---------------------------------------------------------------------------
+
 try:
     df_signal = load_signal()
     df_gps    = load_gps()
@@ -114,9 +112,9 @@ st.success(
     f"{len(df_status)} status rows."
 )
 
-# ---------------------------------------------------------------------------
+
 # KPI ROW
-# ---------------------------------------------------------------------------
+
 st.subheader("Key indicators")
 try:
     k1, k2, k3, k4 = st.columns(4)
@@ -141,9 +139,9 @@ except Exception:
 
 st.divider()
 
-# ---------------------------------------------------------------------------
+
 # SIGNAL STRENGTH CHARTS
-# ---------------------------------------------------------------------------
+
 st.subheader("Signal strength by operator")
 try:
     if not df_signal.empty:
@@ -173,9 +171,9 @@ except Exception:
 
 st.divider()
 
-# ---------------------------------------------------------------------------
+
 # GPS CHARTS
-# ---------------------------------------------------------------------------
+
 st.subheader("GPS precision by provider")
 try:
     if not df_gps.empty:
@@ -208,9 +206,9 @@ except Exception:
 
 st.divider()
 
-# ---------------------------------------------------------------------------
+
 # STATUS BREAKDOWN
-# ---------------------------------------------------------------------------
+
 st.subheader("Status distribution")
 try:
     if not df_status.empty:
@@ -238,9 +236,9 @@ except Exception:
 
 st.divider()
 
-# ---------------------------------------------------------------------------
+
 # RAW DATA TABLES
-# ---------------------------------------------------------------------------
+
 st.subheader("Recent windows (raw data)")
 try:
     t1, t2, t3 = st.tabs(["Signal strength", "GPS precision", "Status count"])

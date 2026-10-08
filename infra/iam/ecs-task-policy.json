@@ -1,0 +1,62 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AthenaQueryLifecycle",
+      "Effect": "Allow",
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:StopQueryExecution",
+        "athena:GetWorkGroup"
+      ],
+      "Resource": [
+        "arn:aws:athena:us-east-1:707491457732:workgroup/primary"
+      ]
+    },
+    {
+      "Sid": "GlueCatalogReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetDatabase",
+        "glue:GetDatabases",
+        "glue:GetTable",
+        "glue:GetTables",
+        "glue:GetPartition",
+        "glue:GetPartitions"
+      ],
+      "Resource": [
+        "arn:aws:glue:us-east-1:707491457732:catalog",
+        "arn:aws:glue:us-east-1:707491457732:database/mobile_network_aggregations",
+        "arn:aws:glue:us-east-1:707491457732:table/mobile_network_aggregations/*"
+      ]
+    },
+    {
+      "Sid": "S3ReadAggregations",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::roy-projects",
+        "arn:aws:s3:::roy-projects/mobile-network-lab/aggregations/*"
+      ]
+    },
+    {
+      "Sid": "S3AthenaResults",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::roy-projects",
+        "arn:aws:s3:::roy-projects/mobile-network-lab/athena-results/*"
+      ]
+    }
+  ]
+}

@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 random.seed(1807)
 
 OUTPUT_PATH = "mobile-logs1.csv"
-TOTAL_RECORDS = 100000
+TOTAL_RECORDS = 250
 
 
 OPERATORS = [
