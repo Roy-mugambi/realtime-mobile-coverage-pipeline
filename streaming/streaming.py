@@ -2,7 +2,7 @@ import logging
 import sys
 from pyspark.sql import SparkSession
 from pyspark.sql.types import (StructType, StructField, StringType, DoubleType, IntegerType)
-from pyspark.sql.functions import (col, from_json, avg, count, window, to_timestamp, date_format, concat, lit, current_date, to_date)
+from pyspark.sql.functions import (col, from_json, avg, sum as spark_sum, count, window, to_timestamp, date_format, concat, lit, current_date, to_date)
 
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
@@ -119,7 +119,9 @@ signal_strength_df = (
         "partition_hour",
     )
     .agg(
-        avg("signal").alias("average_signal")
+        avg("signal").alias("average_signal"),
+        spark_sum("signal").alias("sum_signal"),
+        count("signal").alias("count_signal"),
     )
     .select(
         col("window.start").alias("window_start"),
@@ -128,6 +130,8 @@ signal_strength_df = (
         "operator",
         "partition_hour",
         "average_signal",
+        "sum_signal",
+        "count_signal",
     )
 )
 
@@ -141,6 +145,10 @@ gps_precision_df = (
     .agg(
         avg("precision").alias("average_precision"),
         avg("satellites").alias("average_satellites"),
+        spark_sum("precision").alias("sum_precision"),
+        count("precision").alias("count_precision"),
+        spark_sum("satellites").alias("sum_satellites"),
+        count("satellites").alias("count_satellites"),
     )
     .select(
         col("window.start").alias("window_start"),
@@ -149,6 +157,10 @@ gps_precision_df = (
         "partition_hour",
         "average_precision",
         "average_satellites",
+        "sum_precision",
+        "count_precision",
+        "sum_satellites",
+        "count_satellites",
     )
 )
 
@@ -176,19 +188,17 @@ status_count_df = (
 logger.info("Aggregation DataFrames defined. Starting write streams.")
 
 # writing stream Output to S3.
-# We will use DataFrame.writeStream to ensure a continous sink(that does to exit after execution)
-# Spark manages this sink for the lifetime of the job
-
-# Since we will be using partition projection in in Athena Queries,  we ought to ensure 
-# that our S3 directory structure match the partition columns and the storage.location.template configured in Athena.
+# We will use DataFrame.writeStream to ensure a continous sink
+# The S3 directory structure must match the partition columns and the storage.location.template configured in Athena.
 
 #CHECKPOINTING
-#Each stream will get its own checkpoint location that will store
-#  - Kinesis Sequence Number
-#  - Open windows ( Agreggation state)
-#  - Sink State - Micro-batches that have been committed to sink
+"""Each stream will get its own checkpoint location that will store
+  - Kinesis Sequence Number
+  - Open windows ( Agreggation state)
+  - Sink State - Micro-batches that have been committed to sink"""
 
-def start_write_stream(df, name: str, partition_cols: list[str]):
+
+def start_write_stream(df, name: str, partition_cols: list[str], checkpoint_name: str = None):
     """
     Attach a write stream to a DataFrame and start it.
 
@@ -198,15 +208,21 @@ def start_write_stream(df, name: str, partition_cols: list[str]):
 
     Parameters
     ----------
-    df             : aggregated streaming DataFrame to write
-    name           : folder name under aggregations/ and checkpoints/
-    partition_cols : list of columns to partition S3 output by
+    df              : aggregated streaming DataFrame to write
+    name            : folder name under aggregations/ for the S3 output path
+    partition_cols  : list of columns to partition S3 output by
+    checkpoint_name : folder name under checkpoints/; defaults to `name`.
+                      Pass a different value when the shape of the
+                      aggregation changes, since Spark ties checkpointed
+                      state to the exact .agg() it was created with and
+                      a resumed job fails on a schema mismatch otherwise.
     """
+    checkpoint_name = checkpoint_name or name
     return (
         df.writeStream
         .format("parquet")
         .outputMode("append")
-        .option("checkpointLocation", f"{S3_CHECKPOINT_PATH}{name}/")
+        .option("checkpointLocation", f"{S3_CHECKPOINT_PATH}{checkpoint_name}/")
         .option("path",               f"{S3_OUTPUT_PATH}{name}/")
         .partitionBy(*partition_cols)
         .trigger(processingTime=TRIGGER_INTERVAL)
@@ -218,12 +234,14 @@ stream_signal   = start_write_stream(
     signal_strength_df,
     "signal_strength_by_operator",
     ["partition_hour", "postal_code"],
+    checkpoint_name="signal_strength_by_operator_v2",
 )
 
 stream_gps      = start_write_stream(
     gps_precision_df,
     "gps_precision_by_provider",
     ["partition_hour", "provider"],
+    checkpoint_name="gps_precision_by_provider_v2",
 )
 
 stream_status   = start_write_stream(
