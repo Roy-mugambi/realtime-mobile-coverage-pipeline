@@ -1,3 +1,5 @@
 /producer/enum_extract.py
 /producer/generator.py
 /dashboard/.venv
+__pycache__/
+.venv/
