@@ -65,7 +65,12 @@ def rows_to_kinesis_records(rows: list[dict]) -> list[dict]:
     records = []
 
     for row in rows:
-        payload = json.dumps(row).encode("utf-8")
+        payload = (json.dumps(row) + "\n").encode("utf-8")
+        """    
+        DELIMITER — trailing "\n":
+        Firehose concatenates records byte-for-byte with no separator. Without
+        the newline, bronze files become {...}{...}{...} and line-based JSON
+        readers (Spark, Athena) parse only the first object per file."""
 
         if len(payload) > MAX_RECORD_SIZE_BYTES:
             logger.warning(f"Skipping oversized record for postal_code={row.get('postal_code')}")
