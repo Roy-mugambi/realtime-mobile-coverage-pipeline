@@ -1,57 +1,86 @@
 """
-SYNTHETIC DATA GENERATOR — Generates realistic mobile network logs
+SYNTHETIC DATA GENERATOR: Kenyan mobile network coverage logs
 
 WHAT THIS DOES:
-  Generates a rich, realistic mobile-network-coverage CSV. 
-  The data has STRUCTURE that mirrors real telecom behaviour, to help our dashboard reveal
-  genuine patterns.
+  Generates a synthetic mobile-network-coverage CSV modelled on the Kenyan
+  market: Kenyan operators, Kenyan towns and their postal codes, and
+  realistic daily usage and congestion patterns. It is NOT real operator
+  data; every value is generated with a fixed seed so runs are reproducible.
 
-SCHEMA:
- COLUMNS = {hour,lat,long,signal,network,operator,status,description,speed,
-  satellites,precission,provider,activity,postal_code}
+SCHEMA (unchanged from v1, so Spark, dbt and Snowflake need no changes):
+  hour, lat, long, signal, network, operator, status, description, speed,
+  satellites, precission, provider, activity, postal_code
+  ("precission" keeps the original source typo on purpose; Spark renames it.)
 
-STRUCTURAL BEHAVIOR OF OUR OUTPUT FILE:
-    - Different operators have different baseline signal quality
-    - Signal degrades during busy hours (network congestion)
-    - GPS precision is worse for "gps" provider than "fused"
-    - GPS degrades when moving fast (in vehicles) vs stationary
-    - Most events are "in service", but outages cluster in time + place
-    - Signal varies by geography (urban vs rural postal codes)"""
+STRUCTURE BAKED INTO THE DATA:
+  - Operator mix weighted roughly like Kenyan subscription shares (approximate,
+    an assumption for synthetic data, not official figures)
+  - Coverage quality differs by operator and by town (urban vs remote)
+  - Signal degrades during morning and evening peaks (congestion)
+  - Volume follows a daily rhythm: quiet overnight, busy mornings and evenings
+  - Bigger towns produce more readings (traffic weighted by area)
+  - Outages are likelier where signal is weak
+  - GPS precision is worse for raw "gps" than "fused", and worse when moving
 
- 
+USAGE:
+  python producer/generator.py                 # 20,000 rows → data/kenya-mobile-logs.csv
+  python producer/generator.py --rows 50000
+"""
+
+import argparse
 import csv
-import random
 import math
-from datetime import datetime, timedelta
+import random
+from collections import Counter
+from pathlib import Path
 
-random.seed(1807)
+SEED = 1807
+DEFAULT_ROWS = 20_000
+DEFAULT_OUTPUT = "data/kenya-mobile-logs.csv"
 
-OUTPUT_PATH = "mobile-logs1.csv"
-TOTAL_RECORDS = 250
-
-
+# (network, operator, base_signal, spread, outage_rate, market_weight)
+# network = who owns the radio network; operator = the brand on the SIM.
+# Equitel is an MVNO riding on Airtel; Faiba runs on JTL's network.
 OPERATORS = [
-    ("movistar",  "Movistar",      32, 8,  0.02),   # premium, reliable
-    ("vodafone",  "vodafone ES",   30, 9,  0.03),   # premium
-    ("orange",    "Orange",        28, 10, 0.04),   # good
-    ("orange",    "JAZZTEL",       22, 11, 0.06),   # budget (Orange MVNO)
-    ("yoigo",     "Yoigo",         20, 12, 0.07),   # budget
-    ("movistar",  "Tuenti",        21, 11, 0.06),   # budget (Movistar MVNO)
-    ("vodafone",  "pepephone",     19, 12, 0.08),   # budget MVNO
-    ("orange",    "simyo",         18, 13, 0.09),   # budget MVNO
-    ("yoigo",     "MASMOVIL",      17, 13, 0.10),   # weakest coverage
+    ("safaricom", "Safaricom", 34,  8, 0.02, 0.62),
+    ("airtel",    "Airtel",    28, 10, 0.04, 0.29),
+    ("telkom",    "Telkom",    22, 11, 0.07, 0.04),
+    ("airtel",    "Equitel",   26, 10, 0.05, 0.03),
+    ("jtl",       "Faiba",     20, 12, 0.08, 0.02),
 ]
 
+# (postal_code, town, lat, long, urban_bonus, traffic_weight)
+# Codes keep their leading zeros (00100, 01000): a deliberate test of every
+# layer that might treat them as numbers.
+POSTAL_AREAS = [
+    ("00100", "Nairobi GPO", -1.2864, 36.8172,  6, 30),
+    ("80100", "Mombasa",     -4.0435, 39.6682,  5, 10),
+    ("40100", "Kisumu",      -0.0917, 34.7680,  4,  7),
+    ("20100", "Nakuru",      -0.3031, 36.0800,  4,  7),
+    ("30100", "Eldoret",      0.5143, 35.2698,  3,  6),
+    ("01000", "Thika",       -1.0333, 37.0693,  3,  5),
+    ("90100", "Machakos",    -1.5177, 37.2634,  2,  4),
+    ("10100", "Nyeri",       -0.4201, 36.9476,  2,  4),
+    ("10400", "Nanyuki",      0.0074, 37.0722,  1,  3),
+    ("60200", "Meru",         0.0463, 37.6559,  1,  4),
+    ("50100", "Kakamega",     0.2827, 34.7519,  0,  4),
+    ("40200", "Kisii",       -0.6817, 34.7667,  0,  4),
+    ("80200", "Malindi",     -3.2192, 40.1169, -1,  2),
+    ("30200", "Kitale",       1.0157, 35.0062, -1,  3),
+    ("70100", "Garissa",     -0.4532, 39.6461, -4,  2),
+    ("60300", "Isiolo",       0.3546, 37.5822, -3,  2),
+    ("30500", "Lodwar",       3.1191, 35.5973, -6,  1),
+]
 
 ACTIVITIES = [
-    ("STILL",       (0.0, 0.5),   0),    # best GPS
-    ("ON_FOOT",     (0.5, 2.0),   5),
-    ("ON_BICYCLE",  (2.0, 8.0),  10),
-    ("IN_VEHICLE",  (8.0, 35.0), 20),    # worst GPS (fast movement)
-    ("TILTING",     (0.0, 1.0),   3),
-    ("UNKNOWN",     (0.0, 5.0),   8),
+    # (activity, speed range m/s, gps_penalty, weight)
+    ("STILL",      (0.0, 0.5),   0, 30),
+    ("ON_FOOT",    (0.5, 2.0),   5, 25),
+    ("IN_VEHICLE", (8.0, 30.0), 20, 25),   # matatus, boda bodas, private cars
+    ("ON_BICYCLE", (2.0, 8.0),  10,  5),
+    ("TILTING",    (0.0, 1.0),   3,  5),
+    ("UNKNOWN",    (0.0, 5.0),   8, 10),
 ]
-
 
 IN_SERVICE = ("0", "STATE_IN_SERVICE")
 OUTAGE_STATES = [
@@ -59,161 +88,104 @@ OUTAGE_STATES = [
     ("2", "STATE_EMERGENCY_ONLY"),
     ("3", "STATE_POWER_OFF"),
 ]
-
-
-POSTAL_AREAS = [
-    ("28013", 40.4168, -3.7038,  5),   # Madrid centre (urban)
-    ("08002", 41.3851,  2.1734,  5),   # Barcelona centre (urban)
-    ("41001", 37.3891, -5.9845,  4),   # Seville (urban)
-    ("46002", 39.4699, -0.3763,  4),   # Valencia (urban)
-    ("48001", 43.2630, -2.9350,  3),   # Bilbao
-    ("29001", 36.7213, -4.4214,  3),   # Malaga
-    ("15001", 43.3623, -8.4115,  1),   # A Coruna
-    ("47001", 41.6523, -4.7245,  0),   # Valladolid
-    ("06001", 38.8794, -6.9707, -2),   # Badajoz (rural-ish)
-    ("22001", 42.1401, -0.4089, -3),   # Huesca (rural)
-    ("44001", 40.3456, -1.1065, -4),   # Teruel (rural, poor coverage)
-    ("05001", 40.6566, -4.6818, -3),   # Avila (rural)
-]
-
 PROVIDERS = ["gps", "fused"]
+
+FIELDNAMES = [
+    "hour", "lat", "long", "signal", "network", "operator", "status",
+    "description", "speed", "satellites", "precission", "provider",
+    "activity", "postal_code",
+]
 
 
 def hourly_volume_weight(hour: int) -> float:
-    """
-    Returns a relative volume multiplier for a given hour of day.
-
-    Models real mobile usage: low overnight (2-5am), ramping through
-    morning, peak midday and evening. This makes the time-series charts
-    show a natural daily rhythm instead of flat uniform volume.
-    """
-    # A simple bimodal curve: morning peak ~9am, evening peak ~8pm
-    morning = math.exp(-((hour - 9) ** 2) / 8)
-    evening = math.exp(-((hour - 20) ** 2) / 10)
-    overnight_floor = 0.1
-    return overnight_floor + morning + evening
+    """Low overnight, a morning peak around 08:00 and an evening peak around 19:00."""
+    morning = math.exp(-((hour - 8) ** 2) / 8)
+    evening = math.exp(-((hour - 19) ** 2) / 10)
+    return 0.1 + morning + evening
 
 
 def congestion_penalty(hour: int) -> float:
-    """
-    Signal degrades during peak hours due to network congestion.
-    Returns a signal penalty (subtracted from baseline).
-    Peak congestion around 8-10am and 7-10pm.
-    """
-    morning = math.exp(-((hour - 9) ** 2) / 6) * 6
-    evening = math.exp(-((hour - 20) ** 2) / 8) * 8
+    """Signal penalty during the commute peaks, strongest in the evening."""
+    morning = math.exp(-((hour - 8) ** 2) / 6) * 6
+    evening = math.exp(-((hour - 19) ** 2) / 8) * 8
     return morning + evening
 
 
-def generate() -> None:
-
+def generate(total_rows: int, output_path: str) -> list[dict]:
+    rng = random.Random(SEED)
     weights = [hourly_volume_weight(h) for h in range(24)]
-    total_weight = sum(weights)
-    records_per_hour = [
-        max(1, round(TOTAL_RECORDS * w / total_weight)) for w in weights
-    ]
+    per_hour = [max(1, round(total_rows * w / sum(weights))) for w in weights]
+
+    op_w = [o[5] for o in OPERATORS]
+    area_w = [a[5] for a in POSTAL_AREAS]
+    act_w = [a[3] for a in ACTIVITIES]
 
     rows = []
-
     for hour in range(24):
-        n = records_per_hour[hour]
         congestion = congestion_penalty(hour)
+        for _ in range(per_hour[hour]):
+            network, operator, base_sig, spread, outage_rate, _ = rng.choices(OPERATORS, op_w)[0]
+            postal, _town, base_lat, base_lon, urban_bonus, _ = rng.choices(POSTAL_AREAS, area_w)[0]
+            activity, speed_range, gps_penalty, _ = rng.choices(ACTIVITIES, act_w)[0]
 
-        for _ in range(n):
-            # pick an operator ---
-            network, operator, base_sig, spread, outage_rate = random.choice(OPERATORS)
+            lat = round(base_lat + rng.uniform(-0.05, 0.05), 5)
+            lon = round(base_lon + rng.uniform(-0.05, 0.05), 5)
+            speed = round(rng.uniform(*speed_range), 1)
 
-            # pick a geographic area ---
-            postal, base_lat, base_lon, urban_bonus = random.choice(POSTAL_AREAS)
-            # jitter the coordinates slightly around the area centre
-            lat = round(base_lat + random.uniform(-0.05, 0.05), 5)
-            lon = round(base_lon + random.uniform(-0.05, 0.05), 5)
-
-            # pick an activity ---
-            activity, speed_range, gps_penalty = random.choice(ACTIVITIES)
-            speed = round(random.uniform(*speed_range), 1)
-
-            # compute signal ---
-            # baseline + urban bonus - congestion - random noise, clamped 0-65
-            signal = base_sig + urban_bonus - congestion + random.gauss(0, spread)
+            signal = base_sig + urban_bonus - congestion + rng.gauss(0, spread)
             signal = int(max(0, min(65, round(signal))))
 
-            # determine status
-            # outage chance rises when signal is very low
-            effective_outage = outage_rate + (0.15 if signal < 5 else 0)
-            if random.random() < effective_outage:
-                status, description = random.choice(OUTAGE_STATES)
-            else:
-                status, description = IN_SERVICE
+            outage = outage_rate + (0.15 if signal < 5 else 0)
+            status, description = rng.choice(OUTAGE_STATES) if rng.random() < outage else IN_SERVICE
 
-            # GPS provider + precision + satellites
-            provider = random.choices(PROVIDERS, weights=[0.7, 0.3])[0]
-            # fused is more accurate (lower precision number) than raw gps
+            provider = rng.choices(PROVIDERS, weights=[0.7, 0.3])[0]
             base_precision = 8 if provider == "fused" else 18
-            precision = base_precision + gps_penalty + random.uniform(0, 15)
-            precision = round(precision, 1)
-            # satellites: fewer when moving fast / poor conditions
+            precision = round(base_precision + gps_penalty + rng.uniform(0, 15), 1)
             base_sats = 9 if provider == "fused" else 6
-            satellites = max(0, round(base_sats - gps_penalty / 6 + random.gauss(0, 1.5)))
-            satellites = float(satellites)
+            satellites = float(max(0, round(base_sats - gps_penalty / 6 + rng.gauss(0, 1.5))))
 
-            
-            minute = random.randint(0, 59)
-            second = random.randint(0, 59)
-            hhmmss = f"{hour:02d}:{minute:02d}:{second:02d}"
-
+            hhmmss = f"{hour:02d}:{rng.randint(0, 59):02d}:{rng.randint(0, 59):02d}"
             rows.append({
-                "hour":        hhmmss,
-                "lat":         lat,
-                "long":        lon,
-                "signal":      signal,
-                "network":     network,
-                "operator":    operator,
-                "status":      status,
-                "description": description,
-                "speed":       speed,
-                "satellites":  satellites,
-                "precission":  precision,   
-                "provider":    provider,
-                "activity":    activity,
+                "hour": hhmmss, "lat": lat, "long": lon, "signal": signal,
+                "network": network, "operator": operator, "status": status,
+                "description": description, "speed": speed, "satellites": satellites,
+                "precission": precision, "provider": provider, "activity": activity,
                 "postal_code": postal,
             })
 
-  
     rows.sort(key=lambda r: r["hour"])
-
-
-    fieldnames = [
-        "hour", "lat", "long", "signal", "network", "operator", "status",
-        "description", "speed", "satellites", "precission", "provider",
-        "activity", "postal_code",
-    ]
-    with open(OUTPUT_PATH, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         writer.writeheader()
         writer.writerows(rows)
+    return rows
 
- 
-    from collections import Counter
-    print(f"Generated {len(rows):,} records → {OUTPUT_PATH}")
-    print()
-    print("Hours covered:", len(set(r['hour'][:2] for r in rows)), "of 24")
-    print("Operators:", len(set(r['operator'] for r in rows)))
-    print("Postal areas:", len(set(r['postal_code'] for r in rows)))
-    print()
-    sig_by_op = {}
+
+def report(rows: list[dict], output_path: str) -> None:
+    print(f"Generated {len(rows):,} rows → {output_path}")
+    print(f"Hours covered: {len({r['hour'][:2] for r in rows})} of 24; "
+          f"last event {rows[-1]['hour']} ({rows[-1]['postal_code']}, {rows[-1]['operator']})")
+    print("\nOperators (avg signal, share):")
+    by_op = {}
     for r in rows:
-        sig_by_op.setdefault(r['operator'], []).append(r['signal'])
-    print("Avg signal by operator (should vary — premium higher):")
-    for op in sorted(sig_by_op, key=lambda o: -sum(sig_by_op[o])/len(sig_by_op[o])):
-        vals = sig_by_op[op]
-        print(f"  {op:<14} {sum(vals)/len(vals):5.1f}  (n={len(vals)})")
-    print()
-    statuses = Counter(r['description'] for r in rows)
-    print("Status distribution:")
-    for desc, cnt in statuses.most_common():
-        print(f"  {desc:<24} {cnt:>5} ({100*cnt/len(rows):.1f}%)")
+        by_op.setdefault(r["operator"], []).append(r["signal"])
+    for op, vals in sorted(by_op.items(), key=lambda kv: -len(kv[1])):
+        print(f"  {op:<10} {sum(vals)/len(vals):5.1f}   {100*len(vals)/len(rows):5.1f}%")
+    print("\nStatus:")
+    for desc, n in Counter(r["description"] for r in rows).most_common():
+        print(f"  {desc:<22} {n:>6} ({100*n/len(rows):.1f}%)")
+    codes = sorted({r["postal_code"] for r in rows})
+    print(f"\nPostal codes ({len(codes)}), for the Athena projection enum:")
+    print("  " + ",".join(codes))
+    cells = len({(r["hour"][:2], r["postal_code"], r["operator"]) for r in rows})
+    print(f"\nHour × postal code × operator cells with data: {cells:,} "
+          f"(avg {len(rows)/cells:.1f} readings each)")
 
 
 if __name__ == "__main__":
-    generate()
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--rows", type=int, default=DEFAULT_ROWS)
+    p.add_argument("--output", default=DEFAULT_OUTPUT)
+    a = p.parse_args()
+    report(generate(a.rows, a.output), a.output)
