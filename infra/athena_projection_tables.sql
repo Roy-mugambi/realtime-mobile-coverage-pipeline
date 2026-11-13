@@ -39,7 +39,7 @@ TBLPROPERTIES (
     'projection.partition_hour.range'  = '0,23',
     'projection.partition_hour.digits' = '2',
     'projection.postal_code.type'      = 'enum',
-    'projection.postal_code.values'    = '05001,06001,08002,15001,22001,28013,29001,41001,44001,46002,47001,48001',
+    'projection.postal_code.values'    = '00100,01000,10100,10400,20100,30100,30200,30500,40100,40200,50100,60200,60300,70100,80100,80200,90100',
     'storage.location.template'        = 's3://roy-projects/mobile-network-lab/aggregations/signal_strength_by_operator/partition_hour=${partition_hour}/postal_code=${postal_code}/'
 );
  
@@ -94,7 +94,7 @@ TBLPROPERTIES (
     'projection.partition_hour.range'  = '0,23',
     'projection.partition_hour.digits' = '2',
     'projection.postal_code.type'      = 'enum',
-    'projection.postal_code.values'    = '05001,06001,08002,15001,22001,28013,29001,41001,44001,46002,47001,48001',
+    'projection.postal_code.values'    = '00100,01000,10100,10400,20100,30100,30200,30500,40100,40200,50100,60200,60300,70100,80100,80200,90100',
     'storage.location.template'        = 's3://roy-projects/mobile-network-lab/aggregations/status_count/partition_hour=${partition_hour}/postal_code=${postal_code}/'
 );
  

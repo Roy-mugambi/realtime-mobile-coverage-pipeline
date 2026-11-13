@@ -21,7 +21,7 @@ from botocore.exceptions import ClientError
 
 STREAM_NAME   = "mobile_coverage_logs"
 AWS_REGION    = "us-east-1"
-CSV_FILE_PATH = "data/mobile-logs1.csv"
+CSV_FILE_PATH = "data/kenya-mobile-logs.csv"
 
 # Kinesis limits
 MAX_BATCH_SIZE        = 500
@@ -141,27 +141,82 @@ def put_records_with_retry(client, stream_name: str, records: list[dict], attemp
 # MAIN
 # ---------------------------------------------------------------------------
 
-def produce(csv_path: str = CSV_FILE_PATH) -> None:
+def event_offset_seconds(hhmmss: str) -> int:
+    """Seconds since midnight for an 'HH:MM:SS' event time."""
+    h, m, s = (int(x) for x in hhmmss.split(":"))
+    return h * 3600 + m * 60 + s
+
+
+def send(client, batch: list[dict]) -> int:
+    return put_records_with_retry(client, STREAM_NAME, batch)
+
+
+def produce(csv_path: str = CSV_FILE_PATH, minutes_per_day: float = 0) -> None:
+    """
+    Send every CSV row to Kinesis.
+
+    minutes_per_day = 0  → burst: as fast as possible (original behaviour).
+    minutes_per_day > 0  → paced replay: the 24 h of event time are spread
+                           over this many real minutes, in event-time order.
+
+    WHY PACE: a burst puts a whole day of event time on the stream in seconds.
+    The two shards are then read at slightly different speeds, the streaming
+    watermark jumps ahead with whichever shard leads, and Spark drops the other
+    shard's records as late. On 2026-11-07 that silently lost 4,228 of 19,998
+    events. Pacing keeps both shards close in event time and stays far below
+    Kinesis limits, so nothing is throttled and retried out of order.
+    """
     client = boto3.client("kinesis", region_name=AWS_REGION)
 
     rows = read_csv(csv_path)
     records = rows_to_kinesis_records(rows)
-
+    pairs = sorted(zip(rows, records), key=lambda rr: rr[0]["hour"])
+    total = len(pairs)
     total_sent = 0
-    total_batches = math.ceil(len(records) / MAX_BATCH_SIZE)
+
+    if minutes_per_day <= 0:
+        logger.info(f"Burst mode: {total:,} records")
+        for batch_num, batch in enumerate(chunk([r for _, r in pairs], MAX_BATCH_SIZE), start=1):
+            total_sent += send(client, batch)
+        logger.info(f"Ingestion complete. {total_sent:,}/{total:,} records sent.")
+        return
+
+    scale = minutes_per_day * 60 / 86_400          # real seconds per event second
+    logger.info(
+        f"Paced mode: {total:,} records, 24 h of event time over "
+        f"{minutes_per_day:g} min ({1 / scale:.0f}x real time)"
+    )
+    t0 = time.monotonic()
+    i = 0
+    last_hour = None
+    while i < total:
+        elapsed = time.monotonic() - t0
+        batch = []
+        while (i < total and len(batch) < MAX_BATCH_SIZE
+               and event_offset_seconds(pairs[i][0]["hour"]) * scale <= elapsed):
+            batch.append(pairs[i][1])
+            i += 1
+        if batch:
+            total_sent += send(client, batch)
+            hour = pairs[i - 1][0]["hour"][:2]
+            if hour != last_hour:
+                logger.info(f"event hour {hour}:00 reached — {total_sent:,}/{total:,} sent")
+                last_hour = hour
+        else:
+            due = event_offset_seconds(pairs[i][0]["hour"]) * scale
+            time.sleep(min(0.25, max(0.0, due - elapsed)))
 
     logger.info(
-        f"Starting ingestion: {len(records):,} records → "
-        f"{total_batches} batch(es) of up to {MAX_BATCH_SIZE} records each"
+        f"Ingestion complete. {total_sent:,}/{total:,} records sent in "
+        f"{(time.monotonic() - t0) / 60:.1f} min."
     )
-
-    for batch_num, batch in enumerate(chunk(records, MAX_BATCH_SIZE), start=1):
-        sent = put_records_with_retry(client, STREAM_NAME, batch)
-        total_sent += sent
-        logger.info(f"Batch {batch_num}/{total_batches} — sent {sent}/{len(batch)} records")
-
-    logger.info(f"Ingestion complete. {total_sent:,}/{len(records):,} records sent successfully.")
 
 
 if __name__ == "__main__":
-    produce()
+    import argparse
+    ap = argparse.ArgumentParser(description="Send the CSV to Kinesis.")
+    ap.add_argument("--csv", default=CSV_FILE_PATH)
+    ap.add_argument("--minutes-per-day", type=float, default=0,
+                    help="0 = burst (default). e.g. 24 = one event-hour per real minute.")
+    a = ap.parse_args()
+    produce(a.csv, a.minutes_per_day)
