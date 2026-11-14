@@ -3,3 +3,4 @@
 /dashboard/.venv
 .venv
 /dashboarb/__pycache__
+__pycache__/
